@@ -3,18 +3,32 @@
 
 Section 7 of the design spec calls for an LLM call to turn each fault
 document into typed frontmatter. This repo has no LLM API wired into the
-sandbox that runs this script, so `extract_steps()` below is a deterministic
-stand-in tuned to the "IS-IS 多拓扑路由不正确" document template: numbered
-steps, one `执行 \`command\` 命令` per step, one negative/positive branch pair
-per step (optionally preceded by a "字段值为/中包含" judgement paragraph and
-followed by a prerequisite bullet list), and a final "收集信息联系技术支持"
-step. Real heterogeneous documents would replace `extract_steps()` with an
-actual model call — the seam is deliberately a single function so that swap
-is local. Anything the extractor can't pin down is marked `_uncertain: true`
-per SCHEMA.md rather than guessed.
+sandbox that runs this script, so structural extraction is a deterministic
+stand-in, split by raw source shape:
+
+- Flat `raw/FC-*.md` (legacy, one file = one fault case): `extract_steps()`
+  stand-in below, tuned to the "IS-IS 多拓扑路由不正确" template (numbered
+  steps, one `执行 \`command\` 命令` per step, one negative/positive branch
+  pair per step, optionally a "字段值为/中包含" judgement paragraph and a
+  prerequisite bullet list, final "收集信息联系技术支持" step).
+- Nested `raw/.../故障案例：<title>/故障处理步骤.md` (+ sibling
+  `常见原因.md` / `相关告警与日志.md`): the manual's own template, which is
+  free-form prose rather than the rigid two-branch shape above, so its
+  `判据分流` is hand-authored data in `NESTED_FAULTCASES` (see module
+  docstring there) instead of being regexed out of the prose. `常见原因.md`
+  and `相关告警与日志.md` *are* regular enough (flat bullet lists under a
+  couple of fixed headings) to parse generically — see
+  `parse_common_causes()` / `parse_alerts_and_logs()`.
+
+Either way the seam is deliberately narrow (one function/table per template)
+so a real model call can replace either half independently. Anything the
+extractor can't pin down is marked `_uncertain: true` per SCHEMA.md rather
+than guessed.
 
 Usage:
     python3 scripts/ingest.py [raw/FC-...md ...]   # default: all of raw/
+    (default run also GCs wiki/{faultcase,action,command} pages that no
+    longer trace back to any raw/ source — see gc_stale_pages())
 """
 from __future__ import annotations
 
@@ -29,9 +43,15 @@ from common import (  # noqa: E402
     COMMAND_DIR,
     FAULTCASE_DIR,
     RAW_DIR,
+    ROOT,
     normalize_command,
+    read_page,
     write_page,
 )
+
+NESTED_STEP_FILE = "故障处理步骤.md"
+COMMON_CAUSES_FILE = "常见原因.md"
+ALERTS_LOGS_FILE = "相关告警与日志.md"
 
 STEP_HEADER_RE = re.compile(r"^(\d+)\.\s+(.+)$")
 CMD_LITERAL_RE = re.compile(r"`([^`]+)`")
@@ -311,6 +331,254 @@ def parse_doc(raw_path: Path) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Nested-directory raw sources: raw/.../故障案例：<title>/{故障处理步骤.md,
+# 常见原因.md,相关告警与日志.md}. 故障处理步骤.md is free-form troubleshooting
+# prose (numbered steps, but not the rigid two-bullet-branch shape the flat
+# docs use — some steps have no branch, some have three or four outcomes),
+# so its 判据分流 is authored here as data once per fault case rather than
+# regexed out generically. 常见原因.md / 相关告警与日志.md are both a fixed
+# heading + flat bullet-list shape and are parsed generically below.
+# ---------------------------------------------------------------------------
+
+
+def parse_common_causes(path: Path) -> list[str]:
+    items = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        s = line.strip()
+        if s.startswith("- "):
+            items.append(s[2:].strip().rstrip("；;。"))
+    return items
+
+
+def parse_alerts_and_logs(path: Path) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = {"相关告警": [], "相关日志": []}
+    current: str | None = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        s = line.strip()
+        if s.startswith("## "):
+            heading = s[3:].strip()
+            current = heading if heading in result else None
+            continue
+        if current and s.startswith("- "):
+            result[current].append(s[2:].strip())
+    return {k: v for k, v in result.items() if v}
+
+
+# 判据分流 for FC-0100, hand-authored from raw/.../故障处理步骤.md (see the
+# module docstring for why). Anchors are 1-indexed line ranges into that
+# file. `否则`/`满足` follow SCHEMA.md §1: `否则` may be an ACT-* id, an
+# inline `{动作}` object, or `"goto step N"`; `满足` may only be `"goto step
+# N"` or `"故障排除"` (a `goto` is used here too since every branch in this
+# doc continues the procedure rather than closing it out).
+FC_0100_STEPS: list[dict] = [
+    {
+        "step": 1,
+        "检查": "检查设备路由学习状态，确认设备是否无法学习到IS-IS路由",
+        "命令_raw": "display ip routing-table",
+        "判据": "IP路由表中是否存在协议优先级比IS-IS高的路由",
+        "判据锚点": "L16-L49",
+        "否则": {"动作": "IP路由表中存在协议优先级比IS-IS高的活跃路由，请根据网络规划调整配置"},
+        "满足": "goto step 2",
+    },
+    {
+        "step": 2,
+        "检查": "检查IS-IS邻居是否正常建立",
+        "命令_raw": "display isis peer",
+        "判据": "IS-IS邻居是否都正常建立",
+        "判据锚点": "L53-L65",
+        "否则": {"动作": "有邻居没有正常建立，请参见 IS-IS邻居无法建立的定位思路"},
+        "满足": "goto step 3",
+    },
+    {
+        "step": 3,
+        "检查": "检查IS-IS路由表是否存在指定路由",
+        "命令_raw": "display isis route",
+        "判据": "IS-IS路由表中指定路由是否存在",
+        "判据锚点": "L69-L106",
+        "否则": "goto step 4",
+        "满足": "goto step 8",
+    },
+    {
+        "step": 4,
+        "检查": "检查接收端LSDB中是否携带指定路由网段",
+        "命令_raw": "display isis lsdb verbose",
+        "判据": "IS-IS泛洪的LSP报文中是否携带对应路由网段",
+        "判据锚点": "L85-L104",
+        "否则": "goto step 6",
+        "满足": "goto step 5",
+    },
+    {
+        "step": 5,
+        "检查": "检查接收端的IS-IS配置是否正确",
+        "判据": "接收端的IS-IS配置是否正确，如是否有路由过滤、认证是否和发送端一致",
+        "判据锚点": "L108-L108",
+        "否则": {"动作": "配置有误，请根据实际需要视情况修改接收端IS-IS配置（路由过滤、认证等）"},
+        "满足": "goto step 6",
+    },
+    {
+        "step": 6,
+        "检查": "检查指定的IS-IS路由是否发布",
+        "命令_raw": "display isis lsdb",
+        "extra_cmds_raw": ["display ip routing-table"],
+        "判据": "LSP报文中是否携带了指定路由",
+        "判据锚点": "L144-L181",
+        "否则": {
+            "动作": "检查源端设备配置是否正确，例如接口是否使能IS-IS；如果是引入的外部路由，"
+            "执行 `display ip routing-table` protocol protocol verbose 命令查看外部路由是否是活跃的"
+        },
+        "满足": "goto step 7",
+    },
+    {
+        "step": 7,
+        "检查": "检查IS-IS的数据库是否同步",
+        "命令_raw": "display isis lsdb",
+        "判据": "LSDB数据库中是否存在指定的LSP报文，且 Seq Num 是否与本地一致",
+        "判据锚点": "L183-L190",
+        "否则": {
+            "动作": "若LSDB数据库中不存在指定的LSP报文，排查设备底层和中间链路是否存在故障；若存在但 Seq "
+            "Num 与本地不一致且不停增长，说明网络中存在其他设备与发布指定路由的设备System ID配置相同，"
+            "需排查网络中设备的IS-IS配置；若 Seq Num 不一致且一直保持不变，可能是LSP报文在传输过程中被"
+            "丢弃，需排查设备底层和中间链路是否存在故障"
+        },
+        "满足": "goto step 8",
+    },
+    {
+        "step": 8,
+        "检查": "检查中间设备是否处于overload状态",
+        "命令_raw": "display isis lsdb",
+        "extra_cmds_raw": ["display current-configuration configuration isis"],
+        "判据": "设备发布的LSP里是否有overload标记位（ATT/P/OL中OL值为1）",
+        "判据锚点": "L192-L216",
+        "否则": {
+            "动作": "登录对应设备，通过 `display current-configuration configuration isis` 命令确认是否有"
+            " set-overload 配置；若存在非预期配置，请删除"
+        },
+        "满足": "goto step 9",
+    },
+    {
+        "step": 9,
+        "检查": "收集信息联系技术支持",
+        "动作": "收集上述步骤的执行结果、设备的配置文件、日志信息、告警信息",
+        "判据锚点": "L218-L221",
+    },
+]
+
+NESTED_FAULTCASES: list[dict] = [
+    {
+        "id": "FC-0100",
+        "case_dir_name": "故障案例：设备学习不到预期的IS-IS路由",
+        "title": "设备学习不到预期的IS-IS路由",
+        "output_stem": "FC-0100-isis-设备学习不到预期的IS-IS路由",
+        "症状实体": ["IS-IS", "IS-IS路由", "路由不正确"],
+        "别名": {
+            "IS-IS": ["isis", "ISIS"],
+            "IS-IS路由": ["ISIS路由", "指定路由", "预期路由"],
+            "路由不正确": [
+                "路由不对",
+                "路由错误",
+                "路由有问题",
+                "路由学不到",
+                "学习不到路由",
+                "路由缺失",
+                "路由信息不正确",
+            ],
+        },
+        "steps": FC_0100_STEPS,
+    },
+]
+
+
+def discover_nested_case_dirs() -> list[Path]:
+    return sorted({p.parent for p in RAW_DIR.rglob(NESTED_STEP_FILE)})
+
+
+def build_nested_doc(spec: dict, case_dir: Path) -> dict:
+    step_path = case_dir / NESTED_STEP_FILE
+
+    used_cmd_ids: list[str] = []
+    used_cmd_raw: dict[str, set[str]] = {}
+
+    def register_cmd(raw_cmd: str) -> str:
+        cid, _ = normalize_command(raw_cmd)
+        used_cmd_ids.append(cid)
+        used_cmd_raw.setdefault(cid, set()).add(raw_cmd)
+        return cid
+
+    steps: list[dict] = []
+    for sdef in spec["steps"]:
+        entry: dict = {"step": sdef["step"], "检查": sdef["检查"]}
+        cmd_raw = sdef.get("命令_raw")
+        if cmd_raw:
+            entry["命令"] = register_cmd(cmd_raw)
+        for extra_raw in sdef.get("extra_cmds_raw", ()):
+            register_cmd(extra_raw)
+        if "判据" in sdef:
+            entry["判据"] = sdef["判据"]
+        entry["判据锚点"] = sdef["判据锚点"]
+        if "否则" in sdef:
+            entry["否则"] = sdef["否则"]
+        if "满足" in sdef:
+            entry["满足"] = sdef["满足"]
+        if "动作" in sdef:
+            entry["动作"] = sdef["动作"]
+        steps.append(entry)
+
+    extra_fields: dict = {}
+    extra_sources: list[str] = []
+    causes_path = case_dir / COMMON_CAUSES_FILE
+    if causes_path.exists():
+        extra_fields["常见原因"] = parse_common_causes(causes_path)
+        extra_sources.append(f"raw/{causes_path.relative_to(RAW_DIR).as_posix()}")
+    alerts_path = case_dir / ALERTS_LOGS_FILE
+    if alerts_path.exists():
+        extra_fields.update(parse_alerts_and_logs(alerts_path))
+        extra_sources.append(f"raw/{alerts_path.relative_to(RAW_DIR).as_posix()}")
+
+    doc = {
+        "id": spec["id"],
+        "title": spec["title"],
+        "症状实体": spec["症状实体"],
+        "别名": spec.get("别名"),
+        "_uncertain_entities": False,
+        "涉及命令": list(dict.fromkeys(used_cmd_ids)),
+        "used_cmd_raw": used_cmd_raw,
+        "判据分流": steps,
+        "pending_actions": {},
+        "source": f"raw/{step_path.relative_to(RAW_DIR).as_posix()}",
+        "output_stem": spec["output_stem"],
+    }
+    doc.update(extra_fields)
+    if extra_sources:
+        doc["补充来源"] = extra_sources
+    return doc
+
+
+def gc_stale_pages(all_docs: list[dict]) -> list[Path]:
+    """Delete wiki/{faultcase,action,command} pages that no longer trace back
+    to any raw/ source in this (full, argv-less) ingest run. Only called for
+    a default full rebuild — a partial `ingest.py raw/X.md` run only knows
+    about X, so it must not be treated as ground truth for what else should
+    exist."""
+    valid_fc_ids = {d["id"] for d in all_docs}
+    valid_act_ids = {aid for d in all_docs for aid in d["pending_actions"]}
+    valid_cmd_ids = {cid for d in all_docs for cid in d["涉及命令"]}
+
+    removed: list[Path] = []
+    for path in sorted(FAULTCASE_DIR.glob("*.md")):
+        fm, _ = read_page(path)
+        if fm.get("id") not in valid_fc_ids:
+            path.unlink()
+            removed.append(path)
+    for dir_, valid_ids in ((ACTION_DIR, valid_act_ids), (COMMAND_DIR, valid_cmd_ids)):
+        for path in sorted(dir_.glob("*.md")):
+            fm, _ = read_page(path)
+            if fm.get("id") not in valid_ids:
+                path.unlink()
+                removed.append(path)
+    return removed
+
+
 COMMAND_TYPE_DISPLAY_PREFIX = "display"
 
 
@@ -359,7 +627,7 @@ def write_action_pages(doc: dict) -> None:
         }
         if pa.requires_anchor:
             fm["requires锚点"] = pa.requires_anchor
-        raw_lines = (RAW_DIR / Path(doc["source"]).name).read_text(encoding="utf-8").splitlines()
+        raw_lines = (ROOT / doc["source"]).read_text(encoding="utf-8").splitlines()
         if pa.requires_anchor:
             from common import parse_anchor
 
@@ -376,17 +644,18 @@ def write_action_pages(doc: dict) -> None:
 
 def write_faultcase_page(doc: dict) -> None:
     fc_id = doc["id"]
-    raw_path = RAW_DIR / Path(doc["source"]).name
+    raw_path = ROOT / doc["source"]
     matches = list(FAULTCASE_DIR.glob(f"{fc_id}-*.md"))
-    path = matches[0] if matches else FAULTCASE_DIR / f"{fc_id}-{raw_path.stem}.md"
+    stem = doc.get("output_stem") or f"{fc_id}-{raw_path.stem}"
+    path = matches[0] if matches else FAULTCASE_DIR / f"{stem}.md"
 
     # 别名 (entity synonyms) is a human/LLM-curated cold-start step (SCHEMA.md
     # §7): preserve it across re-ingests instead of clobbering it back to
-    # empty every time the structural extraction reruns.
+    # empty every time the structural extraction reruns. Nested docs seed a
+    # default (spec-authored, not LLM-curated) 别名 so there's still a first
+    # value the first time a case is ingested.
     existing_alias = None
     if path.exists():
-        from common import read_page
-
         try:
             existing_fm, _ = read_page(path)
             existing_alias = existing_fm.get("别名")
@@ -401,9 +670,14 @@ def write_faultcase_page(doc: dict) -> None:
     }
     if existing_alias:
         fm["别名"] = existing_alias
+    elif doc.get("别名"):
+        fm["别名"] = doc["别名"]
     fm["涉及命令"] = doc["涉及命令"]
     fm["判据分流"] = [dict(s) for s in doc["判据分流"]]
     fm["source"] = doc["source"]
+    for extra_field in ("常见原因", "相关告警", "相关日志", "补充来源"):
+        if doc.get(extra_field):
+            fm[extra_field] = doc[extra_field]
     if doc.get("_uncertain_entities"):
         fm["_uncertain_entities"] = True
 
@@ -412,8 +686,20 @@ def write_faultcase_page(doc: dict) -> None:
 
 
 def main(argv: list[str]) -> None:
-    targets = [Path(a) for a in argv] if argv else sorted(RAW_DIR.glob("*.md"))
-    all_docs = [parse_doc(p) for p in targets]
+    full_rebuild = not argv
+    if full_rebuild:
+        targets = sorted(RAW_DIR.glob("*.md"))
+        all_docs = [parse_doc(p) for p in targets]
+        specs_by_dir = {s["case_dir_name"]: s for s in NESTED_FAULTCASES}
+        for case_dir in discover_nested_case_dirs():
+            spec = specs_by_dir.get(case_dir.name)
+            if spec is None:
+                print(f"WARN: no hand-authored NESTED_FAULTCASES entry for {case_dir}, skipping")
+                continue
+            all_docs.append(build_nested_doc(spec, case_dir))
+    else:
+        targets = [Path(a) for a in argv]
+        all_docs = [parse_doc(p) for p in targets]
 
     all_cmds: dict[str, set[str]] = {}
     fc_ref_map: dict[str, list[str]] = {}
@@ -433,6 +719,13 @@ def main(argv: list[str]) -> None:
     for doc in all_docs:
         n_actions = len(doc["pending_actions"])
         print(f"  {doc['id']}: {len(doc['判据分流'])} steps, {n_actions} action(s) derived")
+
+    if full_rebuild:
+        removed = gc_stale_pages(all_docs)
+        if removed:
+            print(f"gc: removed {len(removed)} stale wiki page(s) with no surviving raw/ source:")
+            for p in removed:
+                print(f"  {p.relative_to(ROOT)}")
 
 
 if __name__ == "__main__":

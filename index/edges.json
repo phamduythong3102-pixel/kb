@@ -1,148 +1,27 @@
 {
-  "ACT-配置接口加入IPv6单播拓扑": [
+  "FC-0100": [
     {
-      "order": 1,
-      "resolved": false,
-      "to": "ipv6",
-      "type": "requires",
-      "命令": "ipv6",
-      "视图": "系统视图"
-    },
-    {
-      "order": 2,
-      "resolved": false,
-      "to": "ipv6 enable",
-      "type": "requires",
-      "命令": "ipv6 enable",
-      "视图": "接口视图"
-    },
-    {
-      "order": 3,
-      "resolved": false,
-      "to": "cost-style wide",
-      "type": "requires",
-      "命令": "cost-style wide",
-      "视图": "IS-IS视图"
-    },
-    {
-      "order": 4,
-      "resolved": false,
-      "to": "topology ipv6-unicast",
-      "type": "requires",
-      "命令": "topology ipv6-unicast",
-      "视图": "IS-IS视图"
-    },
-    {
-      "order": 5,
-      "resolved": true,
-      "to": "CMD-isis-ipv6-enable",
-      "type": "requires",
-      "命令": "isis ipv6 enable",
-      "视图": "接口视图"
-    }
-  ],
-  "ACT-配置接口加入组播拓扑": [
-    {
-      "order": 1,
-      "resolved": false,
-      "to": "ip topology multicast",
-      "type": "requires",
-      "命令": "ip topology multicast",
-      "视图": "系统视图"
-    },
-    {
-      "order": 2,
-      "resolved": false,
-      "to": "cost-style wide",
-      "type": "requires",
-      "命令": "cost-style wide",
-      "视图": "IS-IS视图"
-    },
-    {
-      "order": 3,
-      "resolved": false,
-      "to": "topology topology-name topology-id multicast",
-      "type": "requires",
-      "命令": "topology topology-name topology-id multicast",
-      "视图": "IS-IS视图"
-    },
-    {
-      "order": 4,
-      "resolved": false,
-      "to": "ip topology multicast enable",
-      "type": "requires",
-      "命令": "ip topology multicast enable",
-      "视图": "接口视图"
-    },
-    {
-      "order": 5,
-      "resolved": true,
-      "to": "CMD-isis-topology-multicast",
-      "type": "requires",
-      "命令": "isis topology multicast",
-      "视图": "接口视图"
-    }
-  ],
-  "FC-0087": [
-    {
-      "to": "CMD-display-isis-interface",
+      "to": "CMD-display-ip-routing-table",
       "type": "uses",
       "via": "step1"
     },
     {
-      "to": "ACT-配置接口加入组播拓扑",
-      "type": "触发修复",
-      "via": "step1"
-    },
-    {
-      "to": "ACT-使能PIM-SM",
-      "type": "触发修复",
+      "to": "CMD-display-isis-peer",
+      "type": "uses",
       "via": "step2"
     },
     {
-      "to": "CMD-display-isis-peer",
+      "to": "CMD-display-isis-route",
       "type": "uses",
       "via": "step3"
     },
     {
-      "to": "CMD-display-isis-route-topology",
+      "to": "CMD-display-isis-lsdb",
       "type": "uses",
       "via": "step4"
     },
     {
-      "to": "CMD-isis-topology-multicast",
-      "type": "uses",
-      "via": "涉及命令"
-    },
-    {
-      "to": "CMD-pim-sm",
-      "type": "uses",
-      "via": "涉及命令"
-    }
-  ],
-  "FC-0092": [
-    {
-      "to": "CMD-display-isis-interface",
-      "type": "uses",
-      "via": "step1"
-    },
-    {
-      "to": "ACT-配置接口加入IPv6单播拓扑",
-      "type": "触发修复",
-      "via": "step1"
-    },
-    {
-      "to": "CMD-display-isis-peer",
-      "type": "uses",
-      "via": "step3"
-    },
-    {
-      "to": "CMD-display-isis-route-topology",
-      "type": "uses",
-      "via": "step4"
-    },
-    {
-      "to": "CMD-isis-ipv6-enable",
+      "to": "CMD-display-current-configuration-configuration-isis",
       "type": "uses",
       "via": "涉及命令"
     }
