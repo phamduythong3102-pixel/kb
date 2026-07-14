@@ -20,6 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import INDEX_DIR, dump_json, normalize_command, write_page  # noqa: E402
+from embedding import embed, semantic_text  # noqa: E402
 import lint  # noqa: E402
 
 
@@ -52,6 +53,17 @@ def build_alias(fc_pages: dict, cmd_pages: dict) -> dict[str, str]:
         add(canonical_text, cmd_id)
         add(cmd_id, cmd_id)
     return dict(sorted(alias.items()))
+
+
+def build_embeddings(fc_pages: dict) -> dict[str, list[float]]:
+    """FaultCase id -> embedding vector, precomputed at build time.
+
+    match_fault's semantic recall leg (kb_engine.py) used to call embed()
+    for every FaultCase on every KB() startup; moved here per SCHEMA.md §6's
+    original plan so a real embedding backend (KB_EMBEDDING_BASE_URL) only
+    gets called once per compile, not once per server start. KB() now just
+    loads this file — same pattern as entity_inverted/alias/edges."""
+    return {fc_id: embed(semantic_text(fm)) for fc_id, (fm, _body, _path) in fc_pages.items()}
 
 
 def build_edges(fc_pages: dict, act_pages: dict, cmd_pages: dict) -> dict[str, list[dict]]:
@@ -137,13 +149,14 @@ def main() -> int:
     dump_json(INDEX_DIR / "entity_inverted.json", build_entity_inverted(fc_pages))
     dump_json(INDEX_DIR / "alias.json", build_alias(fc_pages, cmd_pages))
     dump_json(INDEX_DIR / "edges.json", build_edges(fc_pages, act_pages, cmd_pages))
+    dump_json(INDEX_DIR / "embeddings.json", build_embeddings(fc_pages))
 
     print("compile_index: OK")
     for w in warns:
         print(f"  WARN [{w.page}] {w.message}")
     for i in infos:
         print(f"  INFO [{i.page}] {i.message}")
-    print(f"  wrote {INDEX_DIR}/{{entity_inverted,alias,edges}}.json")
+    print(f"  wrote {INDEX_DIR}/{{entity_inverted,alias,edges,embeddings}}.json")
     return 0
 
 

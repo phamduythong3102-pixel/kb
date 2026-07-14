@@ -91,6 +91,6 @@ lint 输出分三级：
 - `entity_inverted.json`：`{ 实体: [FC-id, ...] }`，来源于所有 FaultCase 的 `症状实体`。
 - `alias.json`：`{ 别名字符串: 规范实体或CMD-id }`，来源于 FaultCase 的 `别名` 字段与 Command 的 `别名` 字段（含 id 本身与 `命令` 全称）。
 - `edges.json`：`{ from_id: [{type, to, ...meta}] }` 全量边表（正向 + 脚本生成的反向），供 `query_entity` 直接邻接查询。
-- `embeddings.npy`：可选，本设计中未启用（实体倒排 + 别名表已满足召回需求；语料规模增长后可按第5条设计原则追加，不在本次实现范围）。
+- `embeddings.json`：`{ FC-id: [float, ...] }`，`match_fault` 语义召回路用的向量，文本取 `title` + `症状实体`（`scripts/embedding.py: semantic_text`），embedding 后端可插拔（默认无网络依赖的确定性 mock，设置 `KB_EMBEDDING_BASE_URL` 环境变量后切真实服务）。原设计中该产物命名为 `embeddings.npy` 且未启用；现已启用，改用与其余三个产物一致的 JSON 格式（避免引入 numpy 依赖），不再是 `.npy`。
 
 以上产物必须可由 `scripts/compile_index.py` 从 `wiki/` 全量重建，任何手改 `index/*.json` 的行为在下次构建时都会被覆盖。

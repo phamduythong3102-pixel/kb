@@ -61,14 +61,13 @@ class KB:
         self._alias_keys_sorted = sorted(self.alias.keys(), key=len, reverse=True)
 
         # Semantic recall leg (match_fault's second path, alongside the
-        # entity_inverted keyword path). Computed once at startup like every
-        # other index here — see SCHEMA.md §6's note that a precomputed
-        # embeddings.npy is the eventual home for this once corpus size makes
-        # per-startup embedding calls too slow; for the current corpus size
-        # eager in-memory computation is simpler and fine.
-        self._fc_vectors: dict[str, list[float]] = {
-            fc_id: embed(self._semantic_text(fc_id)) for fc_id in self.fc
-        }
+        # entity_inverted keyword path). Precomputed by compile_index.py at
+        # build time (SCHEMA.md §6) and just loaded here like every other
+        # index file — a real embedding backend only gets called once per
+        # compile, not once per KB() startup. A FaultCase page added without
+        # rerunning compile_index.py won't have a vector yet; match_fault
+        # treats that as "no semantic signal" for it rather than erroring.
+        self._fc_vectors: dict[str, list[float]] = load_json(INDEX_DIR / "embeddings.json")
 
     # -- shared: query normalization ------------------------------------
 
@@ -104,17 +103,6 @@ class KB:
     # matters more for the mock embedder (embedding.py) than a real model,
     # but keep the floor regardless so a bad match never turns into a candidate.
     _SEMANTIC_MIN_SIM = 0.15
-
-    def _semantic_text(self, fc_id: str) -> str:
-        """Text embedded per-FaultCase for the semantic recall leg.
-
-        title + 症状实体 (not full 正文): keeps embedding calls cheap and
-        keeps the signal aligned with what the keyword leg already indexes,
-        so score fusion is comparing like with like rather than a short
-        query against a whole raw document's worth of noise.
-        """
-        fm = self.fc[fc_id]["fm"]
-        return " ".join([fm.get("title", ""), *fm.get("症状实体", [])])
 
     def match_fault(self, query: str, top_k: int = 3) -> dict:
         matched = self.normalize_query(query)

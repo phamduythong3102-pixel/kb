@@ -55,6 +55,19 @@ def embed(text: str) -> list[float]:
     return _mock_embed(text)
 
 
+def semantic_text(fm: dict) -> str:
+    """Frontmatter -> the text actually embedded for a FaultCase.
+
+    title + 症状实体 (not full 正文): keeps embedding calls cheap and keeps
+    the signal aligned with what the keyword leg (entity_inverted.json)
+    already indexes, so match_fault's score fusion compares like with like
+    rather than a short query against a whole raw document's worth of noise.
+    Shared by compile_index.py (writes index/embeddings.json at build time)
+    and kb_engine.py (embeds the live query the same way at match time).
+    """
+    return " ".join([fm.get("title", ""), *fm.get("症状实体", [])])
+
+
 def cosine(a: list[float], b: list[float]) -> float:
     if not a or not b or len(a) != len(b):
         return 0.0
