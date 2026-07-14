@@ -27,6 +27,7 @@ from common import (  # noqa: E402
     load_json,
     read_page,
 )
+from embedding import cosine, embed  # noqa: E402
 
 FIELD_RE = re.compile(r"字段\s*(\S+(?:\s+\S+)*?)(?:\s*值为|\s*中包含|，|$)")
 
@@ -59,6 +60,16 @@ class KB:
         # longest-alias-first so multi-word aliases win over short substrings
         self._alias_keys_sorted = sorted(self.alias.keys(), key=len, reverse=True)
 
+        # Semantic recall leg (match_fault's second path, alongside the
+        # entity_inverted keyword path). Computed once at startup like every
+        # other index here — see SCHEMA.md §6's note that a precomputed
+        # embeddings.npy is the eventual home for this once corpus size makes
+        # per-startup embedding calls too slow; for the current corpus size
+        # eager in-memory computation is simpler and fine.
+        self._fc_vectors: dict[str, list[float]] = {
+            fc_id: embed(self._semantic_text(fc_id)) for fc_id in self.fc
+        }
+
     # -- shared: query normalization ------------------------------------
 
     def normalize_query(self, query: str) -> list[str]:
@@ -82,35 +93,82 @@ class KB:
 
     # -- 8.1 match_fault ---------------------------------------------------
 
+    # Fusion weights for the two recall legs (§ design discussion: keyword
+    # path is precise but brittle to unlisted synonyms/hypernyms; semantic
+    # path catches paraphrases the alias table doesn't know about but is
+    # noisier). Keyword is weighted higher because entity_inverted hits are
+    # curated/exact; semantic is a recall net, not the primary signal.
+    _KEYWORD_WEIGHT = 0.6
+    _SEMANTIC_WEIGHT = 0.4
+    # Below this cosine similarity a semantic "hit" is noise, not a signal —
+    # matters more for the mock embedder (embedding.py) than a real model,
+    # but keep the floor regardless so a bad match never turns into a candidate.
+    _SEMANTIC_MIN_SIM = 0.15
+
+    def _semantic_text(self, fc_id: str) -> str:
+        """Text embedded per-FaultCase for the semantic recall leg.
+
+        title + 症状实体 (not full 正文): keeps embedding calls cheap and
+        keeps the signal aligned with what the keyword leg already indexes,
+        so score fusion is comparing like with like rather than a short
+        query against a whole raw document's worth of noise.
+        """
+        fm = self.fc[fc_id]["fm"]
+        return " ".join([fm.get("title", ""), *fm.get("症状实体", [])])
+
     def match_fault(self, query: str, top_k: int = 3) -> dict:
         matched = self.normalize_query(query)
         matched_entities = [e for e in matched if e in self.entity_inverted]
 
-        scores: dict[str, float] = {}
+        # -- leg 1: keyword/entity path (entity_inverted.json) --
+        keyword_scores: dict[str, float] = {}
         overlap: dict[str, list[str]] = {}
         for entity in matched_entities:
             for fc_id in self.entity_inverted[entity]:
                 overlap.setdefault(fc_id, [])
                 if entity not in overlap[fc_id]:
                     overlap[fc_id].append(entity)
-
-        if not overlap:
-            return self._fallback(query, matched)
-
         for fc_id, ents in overlap.items():
             total = len(self.fc[fc_id]["fm"].get("症状实体", [])) or 1
-            scores[fc_id] = len(ents) / total
+            keyword_scores[fc_id] = len(ents) / total
 
-        ranked = sorted(overlap.keys(), key=lambda fid: (-scores[fid], fid))[:top_k]
-        candidates = [
-            {
-                "fault_id": fid,
-                "title": self.fc[fid]["fm"]["title"],
-                "matched_entities": overlap[fid],
-                "score": round(scores[fid], 3),
-            }
-            for fid in ranked
-        ]
+        # -- leg 2: semantic path (embedding cosine similarity) --
+        query_vec = embed(query)
+        semantic_scores: dict[str, float] = {}
+        for fc_id, vec in self._fc_vectors.items():
+            sim = cosine(query_vec, vec)
+            if sim >= self._SEMANTIC_MIN_SIM:
+                semantic_scores[fc_id] = sim
+
+        fc_ids = set(keyword_scores) | set(semantic_scores)
+        if not fc_ids:
+            return self._fallback(query, matched)
+
+        combined: dict[str, float] = {
+            fc_id: (
+                self._KEYWORD_WEIGHT * keyword_scores.get(fc_id, 0.0)
+                + self._SEMANTIC_WEIGHT * semantic_scores.get(fc_id, 0.0)
+            )
+            for fc_id in fc_ids
+        }
+
+        ranked = sorted(fc_ids, key=lambda fid: (-combined[fid], fid))[:top_k]
+        candidates = []
+        for fid in ranked:
+            matched_via = []
+            if fid in keyword_scores:
+                matched_via.append("keyword")
+            if fid in semantic_scores:
+                matched_via.append("semantic")
+            candidates.append(
+                {
+                    "fault_id": fid,
+                    "title": self.fc[fid]["fm"]["title"],
+                    "matched_entities": overlap.get(fid, []),
+                    "score": round(combined[fid], 3),
+                    "matched_via": matched_via,
+                }
+            )
 
         discriminators = []
         if len(candidates) > 1:

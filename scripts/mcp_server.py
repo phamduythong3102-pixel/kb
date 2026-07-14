@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""MCP server exposing match_fault / get_procedure / query_entity (spec §8).
+"""MCP server exposing match_fault / get_procedure (spec §8; query_entity
+exists in kb_engine.KB per §8.3 but is intentionally not registered as a
+tool here — see the comment near the bottom of this file for why).
 
 Loads index/*.json into memory once at startup (KB()) and never touches
 disk again per request — "查询期零重基础设施" (design philosophy, §2).
@@ -10,7 +12,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Literal
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from kb_engine import KB  # noqa: E402
@@ -39,18 +40,16 @@ def get_procedure(fault_id: str, include_fulltext: bool = True) -> dict:
     return kb.get_procedure(fault_id, include_fulltext=include_fulltext)
 
 
-@mcp.tool()
-def query_entity(
-    entity_id: str,
-    direction: Literal["out", "in", "both"] = "both",
-    edge_type: str | None = None,
-) -> dict:
-    """One-hop adjacency query over the FaultCase/Action/Command graph.
-    e.g. entity_id="ACT-配置接口加入组播拓扑", direction="out",
-    edge_type="requires" returns its ordered prerequisite command chain;
-    entity_id="CMD-pim-sm", direction="in", edge_type="被引用于" returns
-    which FaultCases this command can help resolve."""
-    return kb.query_entity(entity_id, direction=direction, edge_type=edge_type)
+# query_entity (one-hop FaultCase/Action/Command adjacency query) is
+# deliberately not registered as an MCP tool: the ticket-driven caller this
+# server serves only ever goes 现象 -> match_fault -> get_procedure, and
+# get_procedure already inlines every ACT branch's command sequence and
+# requires chain, so there is no point in this flow where a reverse/adjacency
+# lookup gets used. KB.query_entity itself is untouched (still called
+# directly by demo/showcase.py's scenario 3) — this only removes it from the
+# Agent-facing tool surface so it doesn't compete for tool-selection budget.
+# Re-add the @mcp.tool() decorator here if a caller that actually explores
+# the graph (e.g. an ops/authoring tool) needs it.
 
 
 if __name__ == "__main__":
