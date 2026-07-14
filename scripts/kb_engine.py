@@ -241,7 +241,14 @@ class KB:
 
     # -- 8.2 get_procedure ---------------------------------------------------
 
-    def get_procedure(self, fault_id: str, include_fulltext: bool = True) -> dict:
+    def get_procedure(self, fault_id: str, include_fulltext: bool = False) -> dict:
+        """include_fulltext defaults False: 判据分流 (with 命令详情/否则_expanded
+        resolved inline below) already carries every command and branch a
+        caller needs to execute the procedure mechanically. 正文 is a
+        回链兜底 for when the structured extraction is suspected incomplete
+        or a judge text needs its full original context — worth the extra
+        payload only on demand, not on every call, since it's routinely
+        larger than the whole structured chain (see CLAUDE.md discussion)."""
         if fault_id not in self.fc:
             return {"error": f"unknown fault_id: {fault_id}"}
         rec = self.fc[fault_id]
@@ -250,19 +257,27 @@ class KB:
         chain = []
         for step in fm.get("判据分流", []):
             entry = dict(step)
+
+            cmd_id = step.get("命令")
+            if cmd_id and cmd_id in self.cmd:
+                cfm = self.cmd[cmd_id]["fm"]
+                entry["命令详情"] = {"id": cmd_id, "命令": cfm["命令"], "类型": cfm["类型"]}
+
             otherwise = step.get("否则")
             if isinstance(otherwise, str) and otherwise.startswith("ACT-"):
                 act = self.act.get(otherwise)
                 if act:
                     afm = act["fm"]
                     requires = sorted(afm.get("requires", []), key=lambda r: r.get("order", 0))
-                    entry["否则_expanded"] = {
+                    expanded = {
                         "action_id": otherwise,
                         "命令序列": afm.get("命令序列", []),
                         "requires": requires,
                         "source": afm.get("source"),
-                        "正文": act["body"].strip(),
                     }
+                    if include_fulltext:
+                        expanded["正文"] = act["body"].strip()
+                    entry["否则_expanded"] = expanded
             chain.append(entry)
 
         result = {

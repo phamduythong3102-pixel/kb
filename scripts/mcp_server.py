@@ -33,10 +33,15 @@ def match_fault(query: str, top_k: int = 3) -> dict:
 
 
 @mcp.tool()
-def get_procedure(fault_id: str, include_fulltext: bool = True) -> dict:
-    """Fetch a FaultCase's full 判据分流 (criteria-routing) chain, with every
-    ACT-triggering branch inlined (command sequence + ordered requires
-    chain), plus the verbatim source text for grounding."""
+def get_procedure(fault_id: str, include_fulltext: bool = False) -> dict:
+    """Fetch a FaultCase's full 判据分流 (criteria-routing) chain: every step's
+    command (id + resolved CLI text + display/config type), judge criterion,
+    and branch target, with every ACT-triggering branch inlined (command
+    sequence + ordered requires chain). This alone is enough to execute the
+    procedure — do not set include_fulltext unless a judge criterion is
+    genuinely ambiguous or you suspect the extraction dropped something;
+    the verbatim source text it adds is routinely larger than everything
+    else in this response combined."""
     return kb.get_procedure(fault_id, include_fulltext=include_fulltext)
 
 
