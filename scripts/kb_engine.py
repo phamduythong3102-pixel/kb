@@ -232,24 +232,22 @@ class KB:
         return m.group(1) if m else None
 
     def _fallback(self, query: str, matched: list[str]) -> dict:
-        """无高置信候选：降级返回实体邻域子图 + 相关页面正文（兜底模式）。"""
-        neighborhood = []
-        for entity in matched:
-            if entity in self.cmd:
-                neighborhood.append(
-                    {
-                        "entity": entity,
-                        "type": "Command",
-                        "edges": self.edges.get(entity, []) + self._in_edges.get(entity, []),
-                    }
-                )
+        """两条召回路都没有候选：如实报告识别到的实体，转人工/转其他排障入口。
+
+        Previously also expanded a Command-node neighborhood here (edges in
+        both directions) for whichever matched entity resolved to a CMD-id.
+        That branch assumed a caller might type a raw command name as the
+        query — a reasonable guess for a human poking at the KB directly,
+        but this server's actual caller only ever submits ticket symptom
+        text (现象), which essentially never normalizes to a CMD-id via
+        alias.json. Removed rather than kept as unreachable code.
+        """
         return {
             "candidates": [],
             "discriminators": [],
             "fallback": {
                 "matched_entities": matched,
-                "neighborhood": neighborhood,
-                "note": "无法从实体倒排索引命中任何故障案例；建议人工浏览 wiki/faultcase/ 或改写查询。",
+                "note": "无法从实体倒排索引与语义相似度中命中任何故障案例；建议人工浏览 wiki/faultcase/ 或改写查询。",
             },
         }
 
